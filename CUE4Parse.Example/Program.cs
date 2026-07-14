@@ -5,6 +5,8 @@ using CUE4Parse.Compression;
 using CUE4Parse.FileProvider;
 using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse.UE4.Versions;
+using CUE4Parse_Conversion.Textures;
+using CUE4Parse_Conversion.Textures.BC;
 using Newtonsoft.Json;
 using Serilog;
 using Serilog.Sinks.SystemConsole.Themes;
@@ -49,6 +51,10 @@ namespace CUE4Parse.Example
                 return;
             }
 
+            var decodedFolder = Path.Combine(dir, "Decoded");
+            Directory.CreateDirectory(decodedFolder);
+            Console.WriteLine($"Created Decoded folder at path: {decodedFolder}");
+
             // Native Oodle: on Windows this downloads oodle-data-shared.dll from the OodleUE release.
             try
             {
@@ -60,6 +66,17 @@ namespace CUE4Parse.Example
             catch (Exception e)
             {
                 Console.WriteLine($"!! Oodle init failed: {e.Message}");
+            }
+
+            // Native Detex: extracts the embedded Detex.dll next to the exe and loads it.
+            if (DetexHelper.LoadDll())
+            {
+                DetexHelper.Initialize(DetexHelper.DLL_NAME);
+                Console.WriteLine("Detex initialized OK");
+            }
+            else
+            {
+                Console.WriteLine("!! Detex DLL extraction failed");
             }
 
             var provider = new DefaultFileProvider(dir, SearchOption.TopDirectoryOnly, new VersionContainer(Game));
@@ -102,6 +119,17 @@ namespace CUE4Parse.Example
                             var m = texture.PlatformData.Mips[i];
                             Console.WriteLine($"  mip[{i}] {m.SizeX}x{m.SizeY} bulk={(m.BulkData?.Data?.Length ?? -1)}");
                         }
+                    }
+
+                    // Saves decoded textures as png files in SampleDir\Decoded
+                    var bitmap = texture.Decode();
+                    if (bitmap != null)
+                    {
+                        var pngBytes = bitmap.Encode(ETextureFormat.Png, false, out var ext);
+                        var outPng = Path.Combine(decodedFolder, $"{name}.{ext}");
+
+                        File.WriteAllBytes(outPng, pngBytes);
+                        Console.WriteLine($"  -> wrote {outPng}");
                     }
 
                     TryDecompress(factory);
