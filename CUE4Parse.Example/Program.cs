@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using CUE4Parse.Compression;
 using CUE4Parse.FileProvider;
 using CUE4Parse.UE4.Assets.Exports.Texture;
@@ -33,7 +34,7 @@ namespace CUE4Parse.Example
     public static class Program
     {
         // EDIT THIS (or pass as args[0]):
-        private const string SampleDir = @"C:\uaue";
+        private const string SampleDir = @"D:\FModel\Output\Exports\Client\Content\Aki\Character\Role\FemaleXL\Qingxiao\R2T1QingxiaoMd10011\Model";
 
         private const EGame Game = EGame.GAME_WutheringWaves;
 
@@ -43,24 +44,40 @@ namespace CUE4Parse.Example
                 .WriteTo.Console(theme: AnsiConsoleTheme.Literate)
                 .CreateLogger();
 
-            var dir = args.Length > 0 ? args[0] : SampleDir;
-            if (!Directory.Exists(dir))
+            var (pathArg, outputDirArg, exportFlag) = ParseArgs(args);
+
+            if (pathArg is null && args.Length > 0)
             {
-                Console.WriteLine($"Sample dir not found: {dir}");
-                Console.WriteLine("Set SampleDir in Program.cs or pass the folder as the first argument.");
+                PrintUsage();
                 return;
             }
 
-            var decodedFolder = Path.Combine(dir, "Decoded");
-            Directory.CreateDirectory(decodedFolder);
-            Console.WriteLine($"Created Decoded folder at path: {decodedFolder}");
+            var dir = pathArg ?? SampleDir;
+            if (!Directory.Exists(dir))
+            {
+                Console.WriteLine($"Folder not found: {dir}");
+                PrintUsage();
+                return;
+            }
+
+            var decodedFolder = outputDirArg ?? Path.Combine(dir, "Decoded");
+            Console.WriteLine($"Path:   {dir}");
+            if (exportFlag)
+            {
+                Directory.CreateDirectory(decodedFolder);
+                Console.WriteLine($"Export: on, writing PNGs to {decodedFolder}");
+            }
+            else
+            {
+                Console.WriteLine("Export: off (diagnostics only, no files written). pass --export to write PNGs");
+            }
 
             // Native Oodle: on Windows this downloads oodle-data-shared.dll from the OodleUE release.
             try
             {
                 OodleHelper.Initialize();
                 Console.WriteLine(OodleHelper.Instance is null
-                    ? "!! Oodle NOT initialized (decompression tests will be skipped)"
+                    ? "!! Oodle didn't initialize, decompression tests + some textures will be skipped"
                     : "Oodle initialized OK");
             }
             catch (Exception e)
@@ -79,65 +96,169 @@ namespace CUE4Parse.Example
                 Console.WriteLine("!! Detex DLL extraction failed");
             }
 
-            var provider = new DefaultFileProvider(dir, SearchOption.TopDirectoryOnly, new VersionContainer(Game));
+            // AllDirectories so we don't miss stuff sitting in subfolders
+            var provider = new DefaultFileProvider(dir, SearchOption.AllDirectories, new VersionContainer(Game));
             provider.Initialize();
 
-            foreach (var file in Directory.GetFiles(dir, "*.uasset"))
+            int converted = 0, skipped = 0, failed = 0;
+
+            foreach (var file in Directory.GetFiles(dir, "*.uasset", SearchOption.AllDirectories))
             {
-                var name = Path.GetFileNameWithoutExtension(file);
-                Console.WriteLine($"\n############################## {name} ##############################");
+                // package name relative to dir, no extension, forward slashes (CUE4Parse wants it that way)
+                var relativeNoExt = Path.GetRelativePath(dir, file);
+                relativeNoExt = relativeNoExt.Substring(0, relativeNoExt.Length - Path.GetExtension(relativeNoExt).Length);
+                var packageName = relativeNoExt.Replace('\\', '/');
+
+                Console.WriteLine($"\n############################## {packageName} ##############################");
                 try
                 {
-                    var exports = provider.LoadPackage(name + ".uasset").GetExports();
+                    var exports = provider.LoadPackage(packageName + ".uasset").GetExports();
 
                     UOodleTextureStorageProviderFactory? factory = null;
-                    UTexture2D? texture = null;
+                    var textures = new List<UTexture2D>();
                     foreach (var e in exports)
                     {
                         if (e is UOodleTextureStorageProviderFactory f) factory = f;
-                        if (e is UTexture2D t) texture = t;
+                        if (e is UTexture2D t) textures.Add(t);
                     }
 
-                    if (factory is null)
+                    if (factory is not null)
                     {
-                        Console.WriteLine("No OodleTextureStorageProviderFactory export found.");
-                        continue;
+                        Console.WriteLine($"Factory: SizeX={factory.SizeX} SizeY={factory.SizeY} " +
+                                          $"flags=0x{factory.BulkDataFlags:X} ElementCount={factory.ElementCount} " +
+                                          $"SizeOnDisk={factory.SizeOnDisk} payload={factory.CompressedData.Length} bytes");
+                        Console.WriteLine("ModeCounts: " + string.Join(", ", factory.ModeCounts));
                     }
 
-                    Console.WriteLine($"Factory: SizeX={factory.SizeX} SizeY={factory.SizeY} " +
-                                      $"flags=0x{factory.BulkDataFlags:X} ElementCount={factory.ElementCount} " +
-                                      $"SizeOnDisk={factory.SizeOnDisk} payload={factory.CompressedData.Length} bytes");
-                    Console.WriteLine("ModeCounts: " + string.Join(", ", factory.ModeCounts));
-
-                    if (texture is not null)
+                    if (textures.Count == 0)
                     {
-                        Console.WriteLine($"Texture2D: Format={texture.Format} " +
-                                          $"PlatformSize={texture.PlatformData.SizeX}x{texture.PlatformData.SizeY} " +
-                                          $"Mips={texture.PlatformData.Mips.Length}");
-                        for (var i = 0; i < texture.PlatformData.Mips.Length; i++)
-                        {
-                            var m = texture.PlatformData.Mips[i];
-                            Console.WriteLine($"  mip[{i}] {m.SizeX}x{m.SizeY} bulk={(m.BulkData?.Data?.Length ?? -1)}");
-                        }
+                        Console.WriteLine("No UTexture2D export found in this package.");
+                    }
+
+                    string? outSubDir = null;
+                    if (exportFlag)
+                    {
+                        outSubDir = Path.Combine(decodedFolder, Path.GetDirectoryName(relativeNoExt) ?? "");
+                        Directory.CreateDirectory(outSubDir);
                     }
 
                     // Saves decoded textures as png files in SampleDir\Decoded
-                    var bitmap = texture.Decode();
-                    if (bitmap != null)
+                    foreach (var texture in textures)
                     {
-                        var pngBytes = bitmap.Encode(ETextureFormat.Png, false, out var ext);
-                        var outPng = Path.Combine(decodedFolder, $"{name}.{ext}");
+                        Console.WriteLine($"Texture2D: {texture.Name} Format={texture.Format} " +
+                                          $"PlatformSize={texture.PlatformData.SizeX}x{texture.PlatformData.SizeY} " +
+                                          $"Mips={texture.PlatformData.Mips.Length}");
 
-                        File.WriteAllBytes(outPng, pngBytes);
-                        Console.WriteLine($"  -> wrote {outPng}");
+                        if (!exportFlag) continue; // diagnostics only, don't touch disk
+
+                        var (didConvert, wasSkipped) = ConvertTextureToPng(texture, outSubDir!);
+                        if (didConvert) converted++;
+                        else if (wasSkipped) skipped++;
+                        else failed++;
                     }
 
-                    TryDecompress(factory);
+                    if (factory is not null)
+                        TryDecompress(factory);
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"FAILED: {ex}");
+                    failed++;
                 }
+            }
+
+            if (exportFlag)
+                Console.WriteLine($"\nDone. Converted={converted} Skipped(already PNG)={skipped} Failed={failed}");
+            else
+                Console.WriteLine("\nDone. (diagnostics only, nothing was written -- pass --export to write PNGs)");
+        }
+
+        private static (string? path, string? outputDir, bool export) ParseArgs(string[] args)
+        {
+            string? path = null;
+            string? outputDir = null;
+            var export = false;
+
+            for (var i = 0; i < args.Length; i++)
+            {
+                switch (args[i])
+                {
+                    case "--path":
+                    case "-p":
+                        if (i + 1 < args.Length) path = args[++i];
+                        break;
+                    case "--output-dir":
+                    case "-o":
+                        if (i + 1 < args.Length) outputDir = args[++i];
+                        break;
+                    case "--export":
+                    case "-e":
+                        export = true;
+                        break;
+                    case "--help":
+                    case "-h":
+                        PrintUsage();
+                        Environment.Exit(0);
+                        break;
+                }
+            }
+
+            return (path, outputDir, export);
+        }
+
+        private static void PrintUsage()
+        {
+            Console.WriteLine("Usage:");
+            Console.WriteLine("  CUE4Parse.Example.exe --path \"<folder with .uasset files>\" [--export] [--output-dir \"<folder>\"]");
+            Console.WriteLine();
+            Console.WriteLine("  --path, -p          folder to scan for .uasset files (required)");
+            Console.WriteLine("  --export, -e        actually write PNGs to disk. without this it's diagnostics only");
+            Console.WriteLine("  --output-dir, -o    where to dump the PNGs when --export is set, defaults to <path>\\Decoded");
+        }
+
+        // turns one texture export into a png in outDir, unless it's already one:
+        //  - a png already sitting there from a previous run -> skip it
+        //  - texture format is already raw png bytes (some games do this for small UI icons) -> just copy the bytes, no re-encoding needed
+        // returns (didConvert, wasSkipped). if both are false, something went wrong.
+        private static (bool didConvert, bool wasSkipped) ConvertTextureToPng(UTexture2D texture, string outDir)
+        {
+            var outPng = Path.Combine(outDir, $"{texture.Name}.png");
+
+            if (File.Exists(outPng))
+            {
+                Console.WriteLine($"  [skip] {texture.Name} already converted -> {outPng}");
+                return (false, true);
+            }
+
+            try
+            {
+                if (texture.Format.ToString().Contains("PNG", StringComparison.OrdinalIgnoreCase))
+                {
+                    var raw = texture.PlatformData.Mips.FirstOrDefault()?.BulkData?.Data;
+                    if (raw is { Length: > 0 })
+                    {
+                        File.WriteAllBytes(outPng, raw);
+                        Console.WriteLine($"  [copy] {texture.Name} already PNG data -> {outPng}");
+                        return (true, false);
+                    }
+                }
+
+                var bitmap = texture.Decode();
+                if (bitmap is null)
+                {
+                    Console.WriteLine($"  [fail] {texture.Name}: Decode() returned null");
+                    return (false, false);
+                }
+
+                var pngBytes = bitmap.Encode(ETextureFormat.Png, false, out _);
+                File.WriteAllBytes(outPng, pngBytes);
+                Console.WriteLine($"  [ok]   {texture.Name} -> {outPng}");
+                return (true, false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  [fail] {texture.Name}: {ex.Message}");
+                return (false, false);
             }
         }
 
@@ -180,7 +301,7 @@ namespace CUE4Parse.Example
                     var decoded = OodleHelper.Instance.Decompress(factory.CompressedData, dst);
                     var ok = decoded == size;
                     Console.WriteLine($"  [{(ok ? "MATCH" : "    ")}] {label}: dst={size} -> decoded={decoded}" +
-                                      (decoded > 0 ? $"  first16={Convert.ToHexString(dst, 0, Math.Min(16, (int) decoded))}" : ""));
+                                      (decoded > 0 ? $"  first16={Convert.ToHexString(dst, 0, Math.Min(16, (int)decoded))}" : ""));
                     if (ok)
                     {
                         var outPath = Path.Combine(Path.GetTempPath(), $"decoded_{size}.bc7.bin");
