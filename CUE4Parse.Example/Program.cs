@@ -90,7 +90,7 @@ namespace CUE4Parse.Example
                     Console.WriteLine($"Factory: SizeX={factory.SizeX} SizeY={factory.SizeY} " +
                                       $"flags=0x{factory.BulkDataFlags:X} ElementCount={factory.ElementCount} " +
                                       $"SizeOnDisk={factory.SizeOnDisk} payload={factory.CompressedData.Length} bytes");
-                    Console.WriteLine("HeaderInts: " + string.Join(", ", factory.HeaderInts));
+                    Console.WriteLine("ModeCounts: " + string.Join(", ", factory.ModeCounts));
 
                     if (texture is not null)
                     {
